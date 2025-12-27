@@ -11,7 +11,10 @@ namespace eep.editer1
         private Color _systemAccentColor = Color.DeepSkyBlue;
 
         private int _blinkTimer = 0;
-        private const int BLINK_INTERVAL = 53;
+
+        // ★変更: 更新頻度が上がったため、点滅間隔の数値を増やして調整
+        // (10ms/6ms倍 ≒ 1.6倍遅く設定して、見た目の速度を維持)
+        private const int BLINK_INTERVAL = 88;
 
         public CursorRenderer(PictureBox cursorBox)
         {
@@ -55,13 +58,11 @@ namespace eep.editer1
         {
             if (_cursorBox == null) return;
 
-            // 位置と高さを設定
             _cursorBox.Location = new Point((int)x, (int)y);
             _cursorBox.Height = height;
 
             if (isImeComposing)
             {
-                // IME入力中: 黒ならアクセントカラー、それ以外はその色
                 bool isBlack = (currentColor.R == 0 && currentColor.G == 0 && currentColor.B == 0);
                 _cursorBox.BackColor = isBlack ? _systemAccentColor : currentColor;
                 _cursorBox.Width = 5;
@@ -70,7 +71,6 @@ namespace eep.editer1
             }
             else
             {
-                // 通常時: 文字色に合わせる
                 _cursorBox.BackColor = currentColor;
                 _cursorBox.Width = 2;
 
@@ -87,7 +87,6 @@ namespace eep.editer1
                 }
             }
 
-            // 最前面に表示
             _cursorBox.BringToFront();
         }
     }

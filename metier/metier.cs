@@ -20,18 +20,19 @@ namespace eep.editer1
         private const long BLINK_TIMEOUT_MS = 400;
         private const float MAX_ELAPSED_MS = 100.0f;
         private const float RATCHET_THRESHOLD_MULTIPLIER = 3.0f;
-        private const int TIMER_INTERVAL_MS = 10;
+
+        private const int TIMER_INTERVAL_MS = 6;
         private const float Y_SNAP_THRESHOLD = 50.0f;
 
         private float _lastInputBaseLine = -1f;
         private bool _isLineSignificant = false;
-
-        // ★追加: 現在の行番号を記録して、行移動を検知する
         private int _currentLineIndex = -1;
 
         public Metier()
         {
             InitializeComponent();
+            NativeMethods.timeBeginPeriod(1);
+
             _stopwatch = new Stopwatch();
             _physics = new CursorPhysics();
             _inputState = new CursorInputState();
@@ -51,7 +52,11 @@ namespace eep.editer1
         private void InitializeForm()
         {
             Text = "metier";
-            FormClosing += (s, e) => _fileManager.AutoSave();
+            FormClosing += (s, e) =>
+            {
+                _fileManager.AutoSave();
+                NativeMethods.timeEndPeriod(1);
+            };
         }
 
         private void InitializeRichTextBox()
@@ -83,17 +88,10 @@ namespace eep.editer1
             var metrics = GetCurrentCursorMetrics();
             var input = GetCurrentInputState();
 
-            // 基準線が未初期化なら初期化
-            if (_lastInputBaseLine < 0)
-            {
-                _lastInputBaseLine = metrics.RawPosition.Y + metrics.Height;
-                _currentLineIndex = richTextBox1.GetLineFromCharIndex(richTextBox1.SelectionStart);
-            }
+            InitializeBaseLineIfNeeded(metrics);
 
             Point targetPosition;
 
-            // ▼▼▼ 修正: ベースライン(Y軸)の計算ロジック ▼▼▼
-            // IME入力中はガタつき防止のため、既存の _lastInputBaseLine を固定で使用
             if (input.IsComposing || input.IsTypingForPhysics)
             {
                 targetPosition = new Point(metrics.RawPosition.X, (int)_lastInputBaseLine);
@@ -103,26 +101,26 @@ namespace eep.editer1
                 int currentLineIdx = richTextBox1.GetLineFromCharIndex(richTextBox1.SelectionStart);
                 int calculatedBottom = metrics.RawPosition.Y + metrics.Height;
 
-                // 削除操作かどうか (Back or Delete)
-                // ※削除時は行が縮む可能性があるので、大きい高さを維持せずリセットする
-                bool isDeleting = (input.IsDeleting || _inputState.LastKeyDown == Keys.Delete);
+                // ★修正箇所: 削除操作中かどうかのフラグは取得しますが...
+                // bool isDeleting = (input.IsDeleting || _inputState.LastKeyDown == Keys.Delete); 
+                // ↑この変数はここでは使わないように変更しました。
 
-                // 条件: 「行が変わった」 または 「削除操作中」 ならベースラインを更新(リセット)
-                if (currentLineIdx != _currentLineIndex || isDeleting)
+                // 条件変更: 「行番号が変わったとき」だけリセットする。
+                // 削除中であっても同じ行にいる限り、ベースラインを「高い位置（Max）」に維持させることで
+                // 大きい文字の隣で小さい文字を消してもカーソルが上に飛ばなくなります。
+                if (currentLineIdx != _currentLineIndex)
                 {
                     _lastInputBaseLine = calculatedBottom;
                     _currentLineIndex = currentLineIdx;
                 }
                 else
                 {
-                    // 条件: 「同じ行」で入力中なら、ベースラインを下げない(大きい文字に合わせる)
-                    // これにより、見出しの後に小さい文字を打ってもカーソル位置が浮かない
+                    // 同じ行なら、今までの高さと比べて「より低い方（Yが大きい方）」を採用し続ける
                     _lastInputBaseLine = Math.Max(_lastInputBaseLine, calculatedBottom);
                 }
 
                 targetPosition = new Point(metrics.RawPosition.X, (int)_lastInputBaseLine);
             }
-            // ▲▲▲ 修正ここまで ▲▲▲
 
             float diffY = Math.Abs(_physics.PosY - targetPosition.Y);
             bool isRowChanged = (diffY > Y_SNAP_THRESHOLD);
@@ -138,9 +136,19 @@ namespace eep.editer1
                 input.ElapsedSinceInput
             );
 
+            // 描画位置 = ベースライン - カーソルの高さ
             _renderer.Render(_physics.PosX, _physics.PosY - metrics.Height, metrics.Height, input.IsComposing, input.IsTypingForBlink, metrics.Color);
 
             ForceHideSystemCaret();
+        }
+
+        private void InitializeBaseLineIfNeeded(CursorMetrics m)
+        {
+            if (_lastInputBaseLine < 0)
+            {
+                _lastInputBaseLine = m.RawPosition.Y + m.Height;
+                _currentLineIndex = richTextBox1.GetLineFromCharIndex(richTextBox1.SelectionStart);
+            }
         }
 
         private void RichTextBox1_TextChanged(object sender, EventArgs e)
@@ -148,7 +156,6 @@ namespace eep.editer1
             _inputState.RegisterInput();
             ForceHideSystemCaret();
 
-            // 行の実績判定（全消し時のリセット用）
             int lineIndex = richTextBox1.GetLineFromCharIndex(richTextBox1.SelectionStart);
             int start = richTextBox1.GetFirstCharIndexFromLine(lineIndex);
             int end = richTextBox1.GetFirstCharIndexFromLine(lineIndex + 1);
@@ -160,7 +167,6 @@ namespace eep.editer1
             {
                 if (_isLineSignificant)
                 {
-                    // IMEキャンセル対策: 処理後にリセットを実行
                     BeginInvoke(new Action(() =>
                     {
                         _textStyler.ResetToNormalFont();
@@ -172,14 +178,6 @@ namespace eep.editer1
             else if (currentLineLength >= 5)
             {
                 _isLineSignificant = true;
-            }
-
-            if (!_inputState.IsImeComposing(richTextBox1.Handle))
-            {
-                Point p = GetCaretPosition();
-                // ここでは仮更新のみ。詳細はTimer1_Tickで決定
-                float h = (richTextBox1.SelectionFont ?? richTextBox1.Font).Height;
-                // _lastInputBaseLine = p.Y + h; // Timer側で制御するため削除
             }
         }
 
@@ -202,7 +200,15 @@ namespace eep.editer1
 
         private void RichTextBox1_KeyUp(object sender, KeyEventArgs e)
         {
-            if (e.KeyCode == Keys.ShiftKey) _textStyler.HandleShiftKeyUp();
+            if (e.KeyCode == Keys.ShiftKey)
+            {
+                int headingHeight = _textStyler.HandleShiftKeyUp();
+                if (headingHeight > 0)
+                {
+                    Point p = GetCaretPosition();
+                    _lastInputBaseLine = p.Y + headingHeight;
+                }
+            }
 
             if (e.KeyCode == Keys.Space)
             {
@@ -226,11 +232,24 @@ namespace eep.editer1
             Font f = richTextBox1.SelectionFont ?? richTextBox1.Font;
             int lineHeight = f.Height;
 
-            // クリック時はその場所の高さを採用してリセット
+            if (index > 0)
+            {
+                int prevCharIndex = index - 1;
+                if (richTextBox1.GetLineFromCharIndex(prevCharIndex) == richTextBox1.GetLineFromCharIndex(index))
+                {
+                    richTextBox1.Select(prevCharIndex, 1);
+                    Font prevFont = richTextBox1.SelectionFont;
+                    if (prevFont != null && prevFont.Height > lineHeight)
+                    {
+                        lineHeight = prevFont.Height;
+                    }
+                    richTextBox1.Select(index, 0);
+                }
+            }
+
             _lastInputBaseLine = pt.Y + lineHeight;
             _currentLineIndex = richTextBox1.GetLineFromCharIndex(index);
 
-            // 行の実績フラグ更新
             int start = richTextBox1.GetFirstCharIndexFromLine(_currentLineIndex);
             int end = richTextBox1.GetFirstCharIndexFromLine(_currentLineIndex + 1);
             if (end == -1) end = richTextBox1.TextLength;
@@ -265,8 +284,6 @@ namespace eep.editer1
             bool comp = _inputState.IsImeComposing(richTextBox1.Handle);
             return new InputStateInfo { IsComposing = comp, IsDeleting = _inputState.IsDeleting(), ElapsedSinceInput = el, IsTypingForPhysics = (el < PHYSICS_TIMEOUT_MS) || comp, IsTypingForBlink = el < BLINK_TIMEOUT_MS };
         }
-
-        private void InitializeBaseLineIfNeeded(CursorMetrics m) { if (_lastInputBaseLine < 0) _lastInputBaseLine = m.RawPosition.Y + m.Height; }
 
         private Point GetCaretPosition()
         {
