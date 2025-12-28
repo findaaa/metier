@@ -239,8 +239,29 @@ namespace eep.editer1
         {
             _inputState.RegisterMouseClick();
 
+            // 1. 基本的な位置取得
             int index = richTextBox1.GetCharIndexFromPosition(e.Location);
             Point pt = richTextBox1.GetPositionFromCharIndex(index);
+
+            // 2. ★シンプル補正: 「最後の文字」の右側をクリックした時だけ特別扱いする
+            // 他の文字は、右半分をクリックすれば勝手に「次の文字」がindexとして返ってくるので無視してOK
+            if (index == richTextBox1.TextLength - 1)
+            {
+                Point ptEnd = richTextBox1.GetPositionFromCharIndex(index + 1); // 文末の座標
+                int charWidth = ptEnd.X - pt.X;
+
+                // クリック位置が最後の文字の「右半分～無限の彼方」なら
+                if (e.Location.X > pt.X + (charWidth / 2))
+                {
+                    index++;      // インデックスを「文末」に進める
+                    pt = ptEnd;   // 描画座標も「文末」にする
+                }
+            }
+
+            // ★重要: 計算した index を即座に内部カーソルに反映させる（これが「勘違い」の原因でした）
+            richTextBox1.Select(index, 0);
+
+            // --- 以降は座標変換とアニメーション処理 ---
             pt.X += richTextBox1.Location.X;
             pt.Y += richTextBox1.Location.Y;
 
@@ -252,13 +273,13 @@ namespace eep.editer1
             int lineEnd = richTextBox1.GetFirstCharIndexFromLine(_currentLineIndex + 1);
             if (lineEnd == -1) lineEnd = richTextBox1.TextLength;
 
-            // クリック時のちらつき防止 (描画停止)
+            // フォントサイズスキャン（ちらつき防止）
             if (clickedFont.Size < 20)
             {
                 NativeMethods.SendMessage(richTextBox1.Handle, NativeMethods.WM_SETREDRAW, 0, 0);
                 try
                 {
-                    int originalStart = richTextBox1.SelectionStart;
+                    // indexは既にSelect済みなので、スキャン後に復帰させるだけでOK
                     for (int i = lineStart; i < lineEnd; i++)
                     {
                         richTextBox1.Select(i, 1);
@@ -268,7 +289,7 @@ namespace eep.editer1
                             break;
                         }
                     }
-                    richTextBox1.Select(index, 0);
+                    richTextBox1.Select(index, 0); // 復帰
                 }
                 finally
                 {
@@ -280,9 +301,11 @@ namespace eep.editer1
             _lastInputBaseLine = pt.Y + appliedHeight;
             _isLineSignificant = (lineEnd - lineStart) >= 5;
 
+            // 前の文字が大きい場合の補正 (行が変わっていない場合のみ)
             if (index > 0)
             {
                 int prevCharIndex = index - 1;
+                // 同じ行かチェック
                 if (richTextBox1.GetLineFromCharIndex(prevCharIndex) == richTextBox1.GetLineFromCharIndex(index))
                 {
                     richTextBox1.Select(prevCharIndex, 1);
@@ -291,11 +314,10 @@ namespace eep.editer1
                     {
                         _lastInputBaseLine = pt.Y + prevFont.Height;
                     }
-                    richTextBox1.Select(index, 0);
+                    richTextBox1.Select(index, 0); // 復帰
                 }
             }
 
-            // クリック移動アニメーション開始（isLineJump = false）
             _physics.StartAnimation(new Point(pt.X, (int)_lastInputBaseLine), isLineJump: false);
 
             ForceHideSystemCaret();
