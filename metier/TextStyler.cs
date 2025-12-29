@@ -290,6 +290,7 @@ namespace eep.editer1
             return startPos;
         }
 
+        // 色塗り範囲
         private int GetColorRangeStart(int keywordStartPos)
         {
             int startPos = keywordStartPos;
@@ -306,25 +307,36 @@ namespace eep.editer1
                     break;
                 }
 
-                if (c == '。' || c == '、' || c == '.' || c == ',')
+               
+                if (c == '。' || c == ',' ||
+                    c == '？' || c == '?' || c == '！' || c == '!')
                 {
+                    // キーワード直結の記号は文の一部として含める
+                    // 例:「元気？赤」→「元気？」までを赤くする
                     if (i == keywordStartPos - 1)
                     {
                         encounteredPunctuationAtEnd = true;
                         continue;
                     }
+
+                    // 文末記号を通過後の、次の記号は区切りとみなす
+                    // 例:「終わった。元気？赤」→「元気？」だけを赤くする
                     if (encounteredPunctuationAtEnd)
                     {
                         startPos = i + 1;
                         break;
                     }
+
+                    // それ以外の途中にある記号も区切りとみなす
                     startPos = i + 1;
                     break;
                 }
+
                 if (i == 0) startPos = 0;
             }
             return startPos;
         }
+
 
         private void InitializeModifiers()
         {
